@@ -36,11 +36,8 @@ const (
 	groupVersionKindExtensionKey = "x-kubernetes-group-version-kind"
 )
 
-// ToProtoSchema builds the proto formatted schema from an OpenAPI spec
-func ToProtoSchema(openAPIDefinitions *spec.Definitions, gvk schema.GroupVersionKind) (proto.Schema, error) {
-	openAPISpec := newMinimalValidOpenAPISpec()
-	openAPISpec.Definitions = *openAPIDefinitions
-
+// ToProtoModels builds the proto formatted models from OpenAPI spec
+func ToProtoModels(openAPISpec *spec.Swagger) (proto.Models, error) {
 	specBytes, err := json.MarshalIndent(openAPISpec, " ", " ")
 	if err != nil {
 		return nil, err
@@ -62,6 +59,11 @@ func ToProtoSchema(openAPIDefinitions *spec.Definitions, gvk schema.GroupVersion
 		return nil, err
 	}
 
+	return models, nil
+}
+
+// LookupProtoSchema looks up a single resource's schema within a proto model
+func LookupProtoSchema(models proto.Models, gvk schema.GroupVersionKind) (proto.Schema, error) {
 	for _, modelName := range models.ListModels() {
 		model := models.LookupModel(modelName)
 		if model == nil {
@@ -76,21 +78,6 @@ func ToProtoSchema(openAPIDefinitions *spec.Definitions, gvk schema.GroupVersion
 	}
 
 	return nil, fmt.Errorf("no model found with a %v tag matching %v", groupVersionKindExtensionKey, gvk)
-}
-
-// newMinimalValidOpenAPISpec creates a minimal openapi spec with only the required fields filled in
-func newMinimalValidOpenAPISpec() *spec.Swagger {
-	return &spec.Swagger{
-		SwaggerProps: spec.SwaggerProps{
-			Swagger: "2.0",
-			Info: &spec.Info{
-				InfoProps: spec.InfoProps{
-					Title:   "Kubernetes",
-					Version: "0.0.0",
-				},
-			},
-		},
-	}
 }
 
 // parseGroupVersionKind gets and parses GroupVersionKind from the extension. Returns empty if it doesn't have one.

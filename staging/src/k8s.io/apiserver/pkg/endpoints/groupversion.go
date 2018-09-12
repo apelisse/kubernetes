@@ -31,7 +31,7 @@ import (
 	"k8s.io/apiserver/pkg/authorization/authorizer"
 	"k8s.io/apiserver/pkg/endpoints/discovery"
 	"k8s.io/apiserver/pkg/registry/rest"
-	openapicommon "k8s.io/kube-openapi/pkg/common"
+	openapiproto "k8s.io/kube-openapi/pkg/util/proto"
 )
 
 // APIGroupVersion is a helper for exposing rest.Storage objects as http.Handlers via go-restful
@@ -85,8 +85,8 @@ type APIGroupVersion struct {
 	// if the client requests it via Accept-Encoding
 	EnableAPIResponseCompression bool
 
-	// OpenAPIConfig lets the individual handlers build a subset of the OpenAPI schema before they are installed.
-	OpenAPIConfig *openapicommon.Config
+	// OpenAPISchemas exposes an OpenAPI schema to each individual handler.
+	OpenAPISchemas map[string]openapiproto.Schema
 }
 
 // InstallREST registers the REST handlers (storage, watch, proxy and redirect) into a restful Container.

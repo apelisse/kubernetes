@@ -19,6 +19,8 @@ package server
 import (
 	"fmt"
 	"net/http"
+	gpath "path"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -42,8 +44,12 @@ import (
 	"k8s.io/apiserver/pkg/registry/rest"
 	"k8s.io/apiserver/pkg/server/healthz"
 	"k8s.io/apiserver/pkg/server/routes"
+	utilopenapi "k8s.io/apiserver/pkg/util/openapi"
 	restclient "k8s.io/client-go/rest"
+	openapibuilder "k8s.io/kube-openapi/pkg/builder"
 	openapicommon "k8s.io/kube-openapi/pkg/common"
+	openapiutil "k8s.io/kube-openapi/pkg/util"
+	openapiproto "k8s.io/kube-openapi/pkg/util/proto"
 )
 
 // Info about an API group.
@@ -320,6 +326,10 @@ func (s preparedGenericAPIServer) NonBlockingRun(stopCh <-chan struct{}) error {
 
 // installAPIResources is a private method for installing the REST storage backing each api groupversionresource
 func (s *GenericAPIServer) installAPIResources(apiPrefix string, apiGroupInfo *APIGroupInfo) error {
+	openAPIGroupSchemas, err := s.getOpenAPISchemasForGroup(apiPrefix, apiGroupInfo)
+	if err != nil {
+		return fmt.Errorf("unable to get openapi schemas for group %v: %v", apiPrefix, err)
+	}
 	for _, groupVersion := range apiGroupInfo.PrioritizedVersions {
 		if len(apiGroupInfo.VersionedResourcesStorageMap[groupVersion.Version]) == 0 {
 			glog.Warningf("Skipping API %v because it has no resources.", groupVersion)
@@ -330,6 +340,7 @@ func (s *GenericAPIServer) installAPIResources(apiPrefix string, apiGroupInfo *A
 		if apiGroupInfo.OptionsExternalVersion != nil {
 			apiGroupVersion.OptionsExternalVersion = apiGroupInfo.OptionsExternalVersion
 		}
+		apiGroupVersion.OpenAPISchemas = openAPIGroupSchemas[groupVersion]
 
 		if err := apiGroupVersion.InstallREST(s.Handler.GoRestfulContainer); err != nil {
 			return fmt.Errorf("unable to setup API %v: %v", apiGroupInfo, err)
@@ -427,7 +438,6 @@ func (s *GenericAPIServer) newAPIGroupVersion(apiGroupInfo *APIGroupInfo, groupV
 		Admit:                        s.admissionControl,
 		MinRequestTimeout:            s.minRequestTimeout,
 		EnableAPIResponseCompression: s.enableAPIResponseCompression,
-		OpenAPIConfig:                s.openAPIConfig,
 		Authorizer:                   s.Authorizer,
 	}
 }
@@ -444,4 +454,81 @@ func NewDefaultAPIGroupInfo(group string, scheme *runtime.Scheme, parameterCodec
 		ParameterCodec:         parameterCodec,
 		NegotiatedSerializer:   codecs,
 	}
+}
+
+// getOpenAPISchemasForGroup is a private method for getting the OpenAPI Schemas for each  api group
+func (s *GenericAPIServer) getOpenAPISchemasForGroup(apiPrefix string, apiGroupInfo *APIGroupInfo) (map[schema.GroupVersion]map[string]openapiproto.Schema, error) {
+	gvkToSchema := make(map[schema.GroupVersion]map[string]openapiproto.Schema, len(apiGroupInfo.PrioritizedVersions))
+	for _, groupVersion := range apiGroupInfo.PrioritizedVersions {
+		gvkToSchema[groupVersion] = make(map[string]openapiproto.Schema, 0)
+	}
+	if s.openAPIConfig == nil {
+		return gvkToSchema, nil
+	}
+	pathsToIgnore := openapiutil.NewTrie(s.openAPIConfig.IgnorePrefixes)
+
+	// Get the canonical names of every resource we need to build in this api group
+	resourceNames := make([]string, 0)
+	for _, groupVersion := range apiGroupInfo.PrioritizedVersions {
+		for resource, storage := range apiGroupInfo.VersionedResourcesStorageMap[groupVersion.Version] {
+			path := gpath.Join(apiPrefix, groupVersion.Group, groupVersion.Version, resource)
+			if !pathsToIgnore.HasPrefix(path) {
+				kind, err := genericapi.GetResourceKind(groupVersion, storage, apiGroupInfo.Scheme)
+				if err != nil {
+					return gvkToSchema, err
+				}
+				sampleObjectPtr, err := apiGroupInfo.Scheme.New(kind)
+				if err != nil {
+					return gvkToSchema, err
+				}
+				sampleObject := reflect.Indirect(reflect.ValueOf(sampleObjectPtr)).Interface()
+				name := getCanonicalTypeName(sampleObject)
+				resourceNames = append(resourceNames, name)
+			}
+		}
+	}
+
+	// Build the openapi definitions for those resources and convert it to proto models
+	openAPISpec, err := openapibuilder.BuildOpenAPIDefinitionsForResources(s.openAPIConfig, resourceNames...)
+	if err != nil {
+		return gvkToSchema, err
+	}
+	openAPIModels, err := utilopenapi.ToProtoModels(openAPISpec)
+	if err != nil {
+		return gvkToSchema, err
+	}
+
+	// Lookup the openapi schema for each resource that isn't being skipped
+	for _, groupVersion := range apiGroupInfo.PrioritizedVersions {
+		for resource, storage := range apiGroupInfo.VersionedResourcesStorageMap[groupVersion.Version] {
+			path := gpath.Join(apiPrefix, groupVersion.Group, groupVersion.Version, resource)
+			if !pathsToIgnore.HasPrefix(path) {
+				kind, err := genericapi.GetResourceKind(groupVersion, storage, apiGroupInfo.Scheme)
+				if err != nil {
+					return gvkToSchema, err
+				}
+				openAPISchema, err := utilopenapi.LookupProtoSchema(openAPIModels, kind)
+				if err != nil {
+					return gvkToSchema, err
+				}
+				gvkToSchema[groupVersion][resource] = openAPISchema
+			}
+		}
+	}
+	return gvkToSchema, nil
+}
+
+func getCanonicalTypeName(model interface{}) string {
+	t := reflect.TypeOf(model)
+	if t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+	if t.PkgPath() == "" {
+		return t.Name()
+	}
+	path := t.PkgPath()
+	if strings.Contains(path, "/vendor/") {
+		path = path[strings.Index(path, "/vendor/")+len("/vendor/"):]
+	}
+	return path + "." + t.Name()
 }
