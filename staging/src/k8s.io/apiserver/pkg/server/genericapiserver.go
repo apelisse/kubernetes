@@ -482,7 +482,7 @@ func (s *GenericAPIServer) getOpenAPISchemasForGroup(apiPrefix string, apiGroupI
 					return gvkToSchema, err
 				}
 				sampleObject := reflect.Indirect(reflect.ValueOf(sampleObjectPtr)).Interface()
-				name := getCanonicalTypeName(sampleObject)
+				name := openapiutil.GetCanonicalTypeName(sampleObject)
 				resourceNames = append(resourceNames, name)
 			}
 		}
@@ -516,19 +516,4 @@ func (s *GenericAPIServer) getOpenAPISchemasForGroup(apiPrefix string, apiGroupI
 		}
 	}
 	return gvkToSchema, nil
-}
-
-func getCanonicalTypeName(model interface{}) string {
-	t := reflect.TypeOf(model)
-	if t.Kind() == reflect.Ptr {
-		t = t.Elem()
-	}
-	if t.PkgPath() == "" {
-		return t.Name()
-	}
-	path := t.PkgPath()
-	if strings.Contains(path, "/vendor/") {
-		path = path[strings.Index(path, "/vendor/")+len("/vendor/"):]
-	}
-	return path + "." + t.Name()
 }
