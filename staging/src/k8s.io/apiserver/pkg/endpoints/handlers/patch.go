@@ -46,6 +46,11 @@ import (
 	"k8s.io/apiserver/pkg/util/dryrun"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	utiltrace "k8s.io/apiserver/pkg/util/trace"
+	"k8s.io/kube-openapi/pkg/schemaconv"
+	"k8s.io/kube-openapi/pkg/util/proto"
+	"sigs.k8s.io/structured-merge-diff/fieldpath"
+	"sigs.k8s.io/structured-merge-diff/merge"
+	"sigs.k8s.io/structured-merge-diff/typed"
 )
 
 // PatchResource returns a function that will handle a resource patch.
@@ -265,10 +270,11 @@ type patcher struct {
 	trace *utiltrace.Trace
 
 	// Set at invocation-time (by applyPatch) and immutable thereafter
-	namespace         string
-	updatedObjectInfo rest.UpdatedObjectInfo
-	mechanism         patchMechanism
-	forceAllowCreate  bool
+	namespace          string
+	updatedObjectInfo  rest.UpdatedObjectInfo
+	mechanism          patchMechanism
+	applyManagedFields rest.TransformFunc
+	forceAllowCreate   bool
 }
 
 type patchMechanism interface {
@@ -446,28 +452,107 @@ func (p *patcher) applyAdmission(ctx context.Context, patchedObject runtime.Obje
 	return patchedObject, nil
 }
 
+// XXX: Needs implementation
+// And we need to pass the proper parameters to do what needs to be done (in a non-patcher way).
+func makeManagedFieldsUpdater(parser *typed.ParseableType, manager string) rest.TransformFunc {
+	return func(_ context.Context, newObj runtime.Object, oldObj runtime.Object) (runtime.Object, error) {
+		newObjMap, err := runtime.DefaultUnstructuredConverter.ToUnstructured(newObj)
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert new object to unstructured: %v", err)
+		}
+		oldObjMap, err := runtime.DefaultUnstructuredConverter.ToUnstructured(oldObj)
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert old object to unstructured: %v", err)
+		}
+
+		accessor, err := meta.Accessor(newObj)
+		if err != nil {
+			return nil, fmt.Errorf("couldn't get accessor: %v", err)
+		}
+		managedFields := accessor.GetManagedFields()
+		accessor.SetManagedFields(nil)
+
+		newObjTyped, err := parser.FromUnstructured(newObjMap)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create typed new object: %v", err)
+		}
+
+		oldObjTyped, err := parser.FromUnstructured(oldObjMap)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create typed old object: %v", err)
+		}
+
+		// XXX: This needs to be converted from managedFields
+		managed := fieldpath.ManagedFields{}
+
+		updater := merge.Updater{Converter: failConverter{}}
+		version := fieldpath.APIVersion(newObjUnstructured.GroupVersionKind().GroupVersion().String())
+		managed, err = updater.Update(oldObjTyped, newObjTyped, version, managed, manager)
+		if err != nil {
+			return nil, fmt.Errorf("failed to update ManagedFields: %v", err)
+		}
+
+		// XXX: This needs to be converted from managed
+		accessor.SetManagedFields(managedFields)
+
+		return newObj, nil
+	}
+}
+
+// This is a model that supports only one schema.
+type temporaryModels struct {
+	schema proto.Schema
+}
+
+func (t temporaryModels) LookupModel(string) proto.Schema {
+	return t.schema
+}
+
+func (temporaryModels) ListModels() []string {
+	return []string{"type"}
+}
+
 // patchResource divides PatchResource for easier unit testing
 func (p *patcher) patchResource(ctx context.Context, scope RequestScope) (runtime.Object, bool, error) {
+	// XXX: OpenAPISchema is a schema rather than the model
+	schema, err := schemaconv.ToSchema(temporaryModels{schema: scope.OpenAPISchema})
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to convert schema: %v", err)
+	}
+	parser := typed.Parser{Schema: *schema}
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to create parser: %v", err)
+	}
+
 	p.namespace = request.NamespaceValue(ctx)
 	switch p.patchType {
 	case types.JSONPatchType, types.MergePatchType:
 		p.mechanism = &jsonPatcher{patcher: p}
+		p.applyManagedFields = makeManagedFieldsUpdater(parser.Type("type"), "jsonpatch")
 	case types.StrategicMergePatchType:
 		schemaReferenceObj, err := p.unsafeConvertor.ConvertToVersion(p.restPatcher.New(), p.kind.GroupVersion())
 		if err != nil {
 			return nil, false, err
 		}
 		p.mechanism = &smpPatcher{patcher: p, schemaReferenceObj: schemaReferenceObj}
+		p.applyManagedFields = makeManagedFieldsUpdater(parser.Type("type"), "smpatch")
 	// this case is unreachable if ServerSideApply is not enabled because we will have already rejected the content type
 	case types.ApplyPatchType:
-		p.mechanism = &applyPatcher{patcher: p, model: scope.OpenAPISchema}
+		updater := merge.Updater{
+			// XXX: We need an actual converter here.
+			Converter: failConverter{},
+		}
+		// XXX: Currently using the first type, since it's not
+		// easy to find the type we care about?
+		p.mechanism = &applyPatcher{patcher: p, parser: parser.Type("type"), updater: updater}
+		p.applyManagedFields = func(_ context.Context, newObj, _ runtime.Object) (runtime.Object, error) { return newObj, nil }
 		p.forceAllowCreate = true
 	default:
 		return nil, false, fmt.Errorf("%v: unimplemented patch type", p.patchType)
 	}
 
 	wasCreated := false
-	p.updatedObjectInfo = rest.DefaultUpdatedObjectInfo(nil, p.applyPatch, p.applyAdmission)
+	p.updatedObjectInfo = rest.DefaultUpdatedObjectInfo(nil, p.applyPatch, p.applyManagedFields, p.applyAdmission)
 	result, err := finishRequest(p.timeout, func() (runtime.Object, error) {
 		// TODO: Pass in UpdateOptions to override UpdateStrategy.AllowUpdateOnCreate
 		updateObject, created, updateErr := p.restPatcher.Update(ctx, p.name, p.updatedObjectInfo, p.createValidation, p.updateValidation, p.forceAllowCreate, p.options)
