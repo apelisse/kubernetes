@@ -90,6 +90,7 @@ go_library(
         "//vendor/github.com/evanphx/json-patch:go_default_library",
         "//vendor/github.com/golang/glog:go_default_library",
         "//vendor/golang.org/x/net/websocket:go_default_library",
+        "//vendor/gopkg.in/yaml.v2:go_default_library",
         "//vendor/k8s.io/kube-openapi/pkg/schemaconv:go_default_library",
         "//vendor/k8s.io/kube-openapi/pkg/util/proto:go_default_library",
         "//vendor/sigs.k8s.io/structured-merge-diff/fieldpath:go_default_library",

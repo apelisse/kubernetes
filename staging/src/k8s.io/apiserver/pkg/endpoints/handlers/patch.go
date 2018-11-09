@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/evanphx/json-patch"
+	yaml "gopkg.in/yaml.v2"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metainternalversion "k8s.io/apimachinery/pkg/apis/meta/internalversion"
@@ -453,9 +454,14 @@ func (p *patcher) applyAdmission(ctx context.Context, patchedObject runtime.Obje
 	return patchedObject, nil
 }
 
-// XXX: Needs implementation
-// And we need to pass the proper parameters to do what needs to be done (in a non-patcher way).
+func noOpTransform(_ context.Context, newObj runtime.Object, _ runtime.Object) (runtime.Object, error) {
+	return newObj, nil
+}
+
 func makeManagedFieldsUpdater(parser *typed.ParseableType, manager string) rest.TransformFunc {
+	// if !utilfeature.DefaultFeatureGate.Enabled(features.ServerSideApply) {
+	// 	return noOpTransform
+	// }
 	return func(_ context.Context, newObj runtime.Object, oldObj runtime.Object) (runtime.Object, error) {
 		newObjMap, err := runtime.DefaultUnstructuredConverter.ToUnstructured(newObj)
 		if err != nil {
@@ -467,13 +473,14 @@ func makeManagedFieldsUpdater(parser *typed.ParseableType, manager string) rest.
 		}
 
 		newObjUnstructured := unstructured.Unstructured{Object: newObjMap}
-		accessor, err := meta.Accessor(newObjUnstructured)
+		accessor, err := meta.Accessor(&newObjUnstructured)
 		if err != nil {
 			return nil, fmt.Errorf("couldn't get accessor: %v", err)
 		}
 		managedFields := accessor.GetManagedFields()
 		accessor.SetManagedFields(nil)
 
+		fmt.Println(newObjMap)
 		newObjTyped, err := parser.FromUnstructured(newObjMap)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create typed new object: %v", err)
@@ -521,6 +528,8 @@ func (p *patcher) patchResource(ctx context.Context, scope RequestScope) (runtim
 	if err != nil {
 		return nil, false, fmt.Errorf("failed to convert schema: %v", err)
 	}
+	y, _ := yaml.Marshal(schema)
+	fmt.Println(string(y))
 	parser := typed.Parser{Schema: *schema}
 	if err != nil {
 		return nil, false, fmt.Errorf("failed to create parser: %v", err)
@@ -547,7 +556,7 @@ func (p *patcher) patchResource(ctx context.Context, scope RequestScope) (runtim
 		// XXX: Currently using the first type, since it's not
 		// easy to find the type we care about?
 		p.mechanism = &applyPatcher{patcher: p, parser: parser.Type("type"), updater: updater}
-		p.applyManagedFields = func(_ context.Context, newObj, _ runtime.Object) (runtime.Object, error) { return newObj, nil }
+		p.applyManagedFields = noOpTransform
 		p.forceAllowCreate = true
 	default:
 		return nil, false, fmt.Errorf("%v: unimplemented patch type", p.patchType)
