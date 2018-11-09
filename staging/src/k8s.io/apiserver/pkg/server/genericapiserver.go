@@ -326,9 +326,9 @@ func (s preparedGenericAPIServer) NonBlockingRun(stopCh <-chan struct{}) error {
 
 // installAPIResources is a private method for installing the REST storage backing each api groupversionresource
 func (s *GenericAPIServer) installAPIResources(apiPrefix string, apiGroupInfo *APIGroupInfo) error {
-	openAPIGroupSchemas, err := s.getOpenAPISchemasForGroup(apiPrefix, apiGroupInfo)
+	openAPIGroupModels, err := s.getOpenAPIModelsForGroup(apiPrefix, apiGroupInfo)
 	if err != nil {
-		return fmt.Errorf("unable to get openapi schemas for group %v: %v", apiPrefix, err)
+		return fmt.Errorf("unable to get openapi models for group %v: %v", apiPrefix, err)
 	}
 	for _, groupVersion := range apiGroupInfo.PrioritizedVersions {
 		if len(apiGroupInfo.VersionedResourcesStorageMap[groupVersion.Version]) == 0 {
@@ -340,7 +340,7 @@ func (s *GenericAPIServer) installAPIResources(apiPrefix string, apiGroupInfo *A
 		if apiGroupInfo.OptionsExternalVersion != nil {
 			apiGroupVersion.OptionsExternalVersion = apiGroupInfo.OptionsExternalVersion
 		}
-		apiGroupVersion.OpenAPISchemas = openAPIGroupSchemas[groupVersion]
+		apiGroupVersion.OpenAPIModels = openAPIGroupModels
 
 		if err := apiGroupVersion.InstallREST(s.Handler.GoRestfulContainer); err != nil {
 			return fmt.Errorf("unable to setup API %v: %v", apiGroupInfo, err)
@@ -456,17 +456,12 @@ func NewDefaultAPIGroupInfo(group string, scheme *runtime.Scheme, parameterCodec
 	}
 }
 
-// getOpenAPISchemasForGroup is a private method for getting the OpenAPI Schemas for each  api group
-func (s *GenericAPIServer) getOpenAPISchemasForGroup(apiPrefix string, apiGroupInfo *APIGroupInfo) (map[schema.GroupVersion]map[string]openapiproto.Schema, error) {
-	gvkToSchema := make(map[schema.GroupVersion]map[string]openapiproto.Schema, len(apiGroupInfo.PrioritizedVersions))
-	for _, groupVersion := range apiGroupInfo.PrioritizedVersions {
-		gvkToSchema[groupVersion] = make(map[string]openapiproto.Schema, 0)
-	}
+// getOpenAPIModelsForGroup is a private method for getting the OpenAPI Schemas for each  api group
+func (s *GenericAPIServer) getOpenAPIModelsForGroup(apiPrefix string, apiGroupInfo *APIGroupInfo) (openapiproto.Models, error) {
 	if s.openAPIConfig == nil {
-		return gvkToSchema, nil
+		return nil, nil
 	}
 	pathsToIgnore := openapiutil.NewTrie(s.openAPIConfig.IgnorePrefixes)
-
 	// Get the canonical names of every resource we need to build in this api group
 	resourceNames := make([]string, 0)
 	for _, groupVersion := range apiGroupInfo.PrioritizedVersions {
@@ -475,11 +470,11 @@ func (s *GenericAPIServer) getOpenAPISchemasForGroup(apiPrefix string, apiGroupI
 			if !pathsToIgnore.HasPrefix(path) {
 				kind, err := genericapi.GetResourceKind(groupVersion, storage, apiGroupInfo.Scheme)
 				if err != nil {
-					return gvkToSchema, err
+					return nil, err
 				}
 				sampleObjectPtr, err := apiGroupInfo.Scheme.New(kind)
 				if err != nil {
-					return gvkToSchema, err
+					return nil, err
 				}
 				sampleObject := reflect.Indirect(reflect.ValueOf(sampleObjectPtr)).Interface()
 				name := openapiutil.GetCanonicalTypeName(sampleObject)
@@ -491,29 +486,7 @@ func (s *GenericAPIServer) getOpenAPISchemasForGroup(apiPrefix string, apiGroupI
 	// Build the openapi definitions for those resources and convert it to proto models
 	openAPISpec, err := openapibuilder.BuildOpenAPIDefinitionsForResources(s.openAPIConfig, resourceNames...)
 	if err != nil {
-		return gvkToSchema, err
+		return nil, err
 	}
-	openAPIModels, err := utilopenapi.ToProtoModels(openAPISpec)
-	if err != nil {
-		return gvkToSchema, err
-	}
-
-	// Lookup the openapi schema for each resource that isn't being skipped
-	for _, groupVersion := range apiGroupInfo.PrioritizedVersions {
-		for resource, storage := range apiGroupInfo.VersionedResourcesStorageMap[groupVersion.Version] {
-			path := gpath.Join(apiPrefix, groupVersion.Group, groupVersion.Version, resource)
-			if !pathsToIgnore.HasPrefix(path) {
-				kind, err := genericapi.GetResourceKind(groupVersion, storage, apiGroupInfo.Scheme)
-				if err != nil {
-					return gvkToSchema, err
-				}
-				openAPISchema, err := utilopenapi.LookupProtoSchema(openAPIModels, kind)
-				if err != nil {
-					return gvkToSchema, err
-				}
-				gvkToSchema[groupVersion][resource] = openAPISchema
-			}
-		}
-	}
-	return gvkToSchema, nil
+	return utilopenapi.ToProtoModels(openAPISpec)
 }

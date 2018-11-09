@@ -22,12 +22,11 @@ import (
 
 	"github.com/go-openapi/spec"
 
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/kube-openapi/pkg/util/proto"
 )
 
 // TestOpenAPIDefinitionsToProtoSchema tests the openapi parser
-func TestOpenAPIDefinitionsToProtoSchema(t *testing.T) {
+func TestOpenAPIDefinitionsToProtoModels(t *testing.T) {
 	openAPISpec := &spec.Swagger{
 		SwaggerProps: spec.SwaggerProps{
 			Swagger: "2.0",
@@ -58,11 +57,6 @@ func TestOpenAPIDefinitionsToProtoSchema(t *testing.T) {
 			},
 		},
 	}
-	gvk := schema.GroupVersionKind{
-		Group:   "testgroup.k8s.io",
-		Version: "v1",
-		Kind:    "Foo",
-	}
 	expectedSchema := &proto.Arbitrary{
 		BaseSchema: proto.BaseSchema{
 			Description: "Description of Foos",
@@ -82,10 +76,7 @@ func TestOpenAPIDefinitionsToProtoSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected ToProtoModels not to return an error")
 	}
-	actualSchema, err := LookupProtoSchema(protoModels, gvk)
-	if err != nil {
-		t.Fatalf("expected LookupProtoSchema not to return an error")
-	}
+	actualSchema := protoModels.LookupModel("io.k8s.api.testgroup.v1.Foo")
 	if !reflect.DeepEqual(expectedSchema, actualSchema) {
 		t.Fatalf("expected schema:\n%v\nbut got:\n%v", expectedSchema, actualSchema)
 	}

@@ -85,8 +85,8 @@ type APIGroupVersion struct {
 	// if the client requests it via Accept-Encoding
 	EnableAPIResponseCompression bool
 
-	// OpenAPISchemas exposes an OpenAPI schema to each individual handler.
-	OpenAPISchemas map[string]openapiproto.Schema
+	// OpenAPIModels exposes the OpenAPI models to each individual handler.
+	OpenAPIModels openapiproto.Models
 }
 
 // InstallREST registers the REST handlers (storage, watch, proxy and redirect) into a restful Container.
