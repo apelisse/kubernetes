@@ -64,6 +64,8 @@ import (
 const (
 	// Jitter used when starting controller managers
 	ControllerStartJitter = 1.0
+	// ConfigzName is the name used for register kube-controller manager /configz, same with GroupName.
+	ConfigzName = "kubecontrollermanager.config.k8s.io"
 )
 
 type ControllerLoopMode int
@@ -142,7 +144,7 @@ func Run(c *config.CompletedConfig, stopCh <-chan struct{}) error {
 	// To help debugging, immediately log version
 	glog.Infof("Version: %+v", version.Get())
 
-	if cfgz, err := configz.New("componentconfig"); err == nil {
+	if cfgz, err := configz.New(ConfigzName); err == nil {
 		cfgz.Set(c.ComponentConfig)
 	} else {
 		glog.Errorf("unable to register configz: %c", err)
@@ -379,6 +381,7 @@ func NewControllerInitializers(loopMode ControllerLoopMode) map[string]InitFunc 
 	controllers["pvc-protection"] = startPVCProtectionController
 	controllers["pv-protection"] = startPVProtectionController
 	controllers["ttl-after-finished"] = startTTLAfterFinishedController
+	controllers["root-ca-cert-publisher"] = startRootCACertPublisher
 
 	return controllers
 }
@@ -524,11 +527,7 @@ func (c serviceAccountTokenControllerStarter) startServiceAccountTokenController
 
 	var rootCA []byte
 	if ctx.ComponentConfig.SAController.RootCAFile != "" {
-		rootCA, err = ioutil.ReadFile(ctx.ComponentConfig.SAController.RootCAFile)
-		if err != nil {
-			return nil, true, fmt.Errorf("error reading root-ca-file at %s: %v", ctx.ComponentConfig.SAController.RootCAFile, err)
-		}
-		if _, err := certutil.ParseCertsPEM(rootCA); err != nil {
+		if rootCA, err = readCA(ctx.ComponentConfig.SAController.RootCAFile); err != nil {
 			return nil, true, fmt.Errorf("error parsing root-ca-file at %s: %v", ctx.ComponentConfig.SAController.RootCAFile, err)
 		}
 	} else {
@@ -557,4 +556,16 @@ func (c serviceAccountTokenControllerStarter) startServiceAccountTokenController
 	ctx.InformerFactory.Start(ctx.Stop)
 
 	return nil, true, nil
+}
+
+func readCA(file string) ([]byte, error) {
+	rootCA, err := ioutil.ReadFile(file)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := certutil.ParseCertsPEM(rootCA); err != nil {
+		return nil, err
+	}
+
+	return rootCA, err
 }

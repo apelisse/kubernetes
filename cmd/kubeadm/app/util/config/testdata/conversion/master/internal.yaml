@@ -1,6 +1,3 @@
-APIEndpoint:
-  AdvertiseAddress: 192.168.2.2
-  BindPort: 6443
 APIServer:
   CertSANs: null
   ExtraArgs:
@@ -141,6 +138,7 @@ ComponentConfigs:
     MaxOpenFiles: 1000000
     MaxPods: 110
     NodeLeaseDurationSeconds: 40
+    NodeStatusReportFrequency: 1m0s
     NodeStatusUpdateFrequency: 10s
     OOMScoreAdj: -999
     PodCIDR: ""
@@ -185,6 +183,9 @@ Etcd:
 FeatureGates: null
 ImageRepository: k8s.gcr.io
 KubernetesVersion: v1.11.2
+LocalAPIEndpoint:
+  AdvertiseAddress: 192.168.2.2
+  BindPort: 6443
 Networking:
   DNSDomain: cluster.local
   PodSubnet: ""
@@ -199,4 +200,4 @@ NodeRegistration:
 Scheduler:
   ExtraArgs: null
   ExtraVolumes: null
-UnifiedControlPlaneImage: ""
+UseHyperKubeImage: true
