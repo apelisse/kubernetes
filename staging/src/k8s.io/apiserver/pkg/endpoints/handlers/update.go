@@ -39,8 +39,6 @@ import (
 	"k8s.io/apiserver/pkg/util/dryrun"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	utiltrace "k8s.io/apiserver/pkg/util/trace"
-	"k8s.io/kube-openapi/pkg/schemaconv"
-	"sigs.k8s.io/structured-merge-diff/typed"
 )
 
 // UpdateResource returns a function that will handle a resource update
@@ -112,6 +110,7 @@ func UpdateResource(r rest.Updater, scope RequestScope, admit admission.Interfac
 		admit = admission.WithAudit(admit, ae)
 
 		if err := checkName(obj, name, namespace, scope.Namer); err != nil {
+			err = errors.NewInternalError(err)
 			scope.err(err, w, req)
 			return
 		}
@@ -119,20 +118,11 @@ func UpdateResource(r rest.Updater, scope RequestScope, admit admission.Interfac
 		userInfo, _ := request.UserFrom(ctx)
 		// We start by updating the managed fields before
 		// performing any other mutation.
-		// XXX: OpenAPISchema is a schema rather than the model
-		schema, err := schemaconv.ToSchema(temporaryModels{schema: scope.OpenAPISchema})
+		parser, err := newgvkParser(scope.OpenAPIModels)
 		if err != nil {
-			err = errors.NewInternalError(err)
 			scope.err(err, w, req)
-			return
 		}
-		parser := typed.Parser{Schema: *schema}
-		if err != nil {
-			err = errors.NewInternalError(err)
-			scope.err(err, w, req)
-			return
-		}
-		transformers := []rest.TransformFunc{makeManagedFieldsUpdater(parser.Type("type"), "put")}
+		transformers := []rest.TransformFunc{makeManagedFieldsUpdater(parser, "put")}
 		if mutatingAdmission, ok := admit.(admission.MutationInterface); ok {
 			transformers = append(transformers, func(ctx context.Context, newObj, oldObj runtime.Object) (runtime.Object, error) {
 				isNotZeroObject, err := hasUID(oldObj)

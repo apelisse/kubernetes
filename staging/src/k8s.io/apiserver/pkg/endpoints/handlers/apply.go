@@ -23,6 +23,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/structured-merge-diff/fieldpath"
 	"sigs.k8s.io/structured-merge-diff/merge"
 	"sigs.k8s.io/structured-merge-diff/typed"
@@ -31,13 +32,22 @@ import (
 type applyPatcher struct {
 	*patcher
 
-	parser  *typed.ParseableType
+	parser  *gvkParser
 	updater merge.Updater
 }
 
 const applyManager = "apply"
 
 func (p *applyPatcher) applyPatchToCurrentObject(currentObject runtime.Object) (runtime.Object, error) {
+	gvk := schema.GroupVersionKind{
+		Group:   p.hubGroupVersion.Group,
+		Version: p.hubGroupVersion.Version,
+		Kind:    currentObject.GetObjectKind().GroupVersionKind().Kind,
+	}
+	pType := p.parser.Type(gvk)
+	if pType == nil {
+		return nil, fmt.Errorf("unable to find schema for type: %v", gvk)
+	}
 	vo, err := p.unsafeConvertor.ConvertToVersion(currentObject, p.hubGroupVersion)
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert object to version: %v", err)
@@ -54,12 +64,12 @@ func (p *applyPatcher) applyPatchToCurrentObject(currentObject runtime.Object) (
 	managedFields := accessor.GetManagedFields()
 	accessor.SetManagedFields(nil)
 
-	currentTyped, err := p.parser.FromUnstructured(current)
+	currentTyped, err := pType.FromUnstructured(current)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create typed current object: %v", err)
 	}
 
-	newTyped, err := p.parser.FromYAML(typed.YAMLObject(p.patchBytes))
+	newTyped, err := pType.FromYAML(typed.YAMLObject(p.patchBytes))
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert patch to typed object: %v", err)
 	}

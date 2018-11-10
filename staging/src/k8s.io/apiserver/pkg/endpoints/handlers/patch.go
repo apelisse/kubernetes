@@ -24,7 +24,6 @@ import (
 	"time"
 
 	"github.com/evanphx/json-patch"
-	yaml "gopkg.in/yaml.v2"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metainternalversion "k8s.io/apimachinery/pkg/apis/meta/internalversion"
@@ -48,11 +47,8 @@ import (
 	"k8s.io/apiserver/pkg/util/dryrun"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	utiltrace "k8s.io/apiserver/pkg/util/trace"
-	"k8s.io/kube-openapi/pkg/schemaconv"
-	"k8s.io/kube-openapi/pkg/util/proto"
 	"sigs.k8s.io/structured-merge-diff/fieldpath"
 	"sigs.k8s.io/structured-merge-diff/merge"
-	"sigs.k8s.io/structured-merge-diff/typed"
 )
 
 // PatchResource returns a function that will handle a resource patch.
@@ -458,11 +454,16 @@ func noOpTransform(_ context.Context, newObj runtime.Object, _ runtime.Object) (
 	return newObj, nil
 }
 
-func makeManagedFieldsUpdater(parser *typed.ParseableType, manager string) rest.TransformFunc {
+func makeManagedFieldsUpdater(parser *gvkParser, manager string) rest.TransformFunc {
 	// if !utilfeature.DefaultFeatureGate.Enabled(features.ServerSideApply) {
 	// 	return noOpTransform
 	// }
 	return func(_ context.Context, newObj runtime.Object, oldObj runtime.Object) (runtime.Object, error) {
+		ptype := parser.Type(newObj.GetObjectKind().GroupVersionKind())
+		if ptype == nil {
+			return nil, fmt.Errorf("failed to find schema for object: %v", newObj.GetObjectKind().GroupVersionKind())
+		}
+
 		newObjMap, err := runtime.DefaultUnstructuredConverter.ToUnstructured(newObj)
 		if err != nil {
 			return nil, fmt.Errorf("failed to convert new object to unstructured: %v", err)
@@ -481,12 +482,12 @@ func makeManagedFieldsUpdater(parser *typed.ParseableType, manager string) rest.
 		accessor.SetManagedFields(nil)
 
 		fmt.Println(newObjMap)
-		newObjTyped, err := parser.FromUnstructured(newObjMap)
+		newObjTyped, err := ptype.FromUnstructured(newObjMap)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create typed new object: %v", err)
 		}
 
-		oldObjTyped, err := parser.FromUnstructured(oldObjMap)
+		oldObjTyped, err := ptype.FromUnstructured(oldObjMap)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create typed old object: %v", err)
 		}
@@ -508,45 +509,24 @@ func makeManagedFieldsUpdater(parser *typed.ParseableType, manager string) rest.
 	}
 }
 
-// This is a model that supports only one schema.
-type temporaryModels struct {
-	schema proto.Schema
-}
-
-func (t temporaryModels) LookupModel(string) proto.Schema {
-	return t.schema
-}
-
-func (temporaryModels) ListModels() []string {
-	return []string{"type"}
-}
-
 // patchResource divides PatchResource for easier unit testing
 func (p *patcher) patchResource(ctx context.Context, scope RequestScope) (runtime.Object, bool, error) {
-	// XXX: OpenAPISchema is a schema rather than the model
-	schema, err := schemaconv.ToSchema(temporaryModels{schema: scope.OpenAPISchema})
+	parser, err := newgvkParser(scope.OpenAPIModels)
 	if err != nil {
-		return nil, false, fmt.Errorf("failed to convert schema: %v", err)
+		return nil, false, err
 	}
-	y, _ := yaml.Marshal(schema)
-	fmt.Println(string(y))
-	parser := typed.Parser{Schema: *schema}
-	if err != nil {
-		return nil, false, fmt.Errorf("failed to create parser: %v", err)
-	}
-
 	p.namespace = request.NamespaceValue(ctx)
 	switch p.patchType {
 	case types.JSONPatchType, types.MergePatchType:
 		p.mechanism = &jsonPatcher{patcher: p}
-		p.applyManagedFields = makeManagedFieldsUpdater(parser.Type("type"), "jsonpatch")
+		p.applyManagedFields = makeManagedFieldsUpdater(parser, "jsonpatch")
 	case types.StrategicMergePatchType:
 		schemaReferenceObj, err := p.unsafeConvertor.ConvertToVersion(p.restPatcher.New(), p.kind.GroupVersion())
 		if err != nil {
 			return nil, false, err
 		}
 		p.mechanism = &smpPatcher{patcher: p, schemaReferenceObj: schemaReferenceObj}
-		p.applyManagedFields = makeManagedFieldsUpdater(parser.Type("type"), "smpatch")
+		p.applyManagedFields = makeManagedFieldsUpdater(parser, "smpatch")
 	// this case is unreachable if ServerSideApply is not enabled because we will have already rejected the content type
 	case types.ApplyPatchType:
 		updater := merge.Updater{
@@ -555,7 +535,7 @@ func (p *patcher) patchResource(ctx context.Context, scope RequestScope) (runtim
 		}
 		// XXX: Currently using the first type, since it's not
 		// easy to find the type we care about?
-		p.mechanism = &applyPatcher{patcher: p, parser: parser.Type("type"), updater: updater}
+		p.mechanism = &applyPatcher{patcher: p, parser: parser, updater: updater}
 		p.applyManagedFields = noOpTransform
 		p.forceAllowCreate = true
 	default:
