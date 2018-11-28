@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "decode.go",
         "encode.go",
+        "fields.go",
         "gvkparser.go",
         "pathelement.go",
         "typeconverter.go",
