@@ -15,6 +15,7 @@ require (
 )
 
 replace (
+	github.com/gogo/protobuf => github.com/apelisse/protobuf v0.0.0-20190410021324-0ad0d52e9ce345a781f6c002748fc399d4efb611
 	golang.org/x/sys => golang.org/x/sys v0.0.0-20190209173611-3b5209105503
 	golang.org/x/text => golang.org/x/text v0.3.1-0.20181227161524-e6919f6577db
 	golang.org/x/tools => golang.org/x/tools v0.0.0-20190313210603-aa82965741a9
